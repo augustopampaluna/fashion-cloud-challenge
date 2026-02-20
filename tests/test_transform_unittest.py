@@ -209,6 +209,16 @@ class TestTransform(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_catalog_from_pricat(pricat_path, mappings_idx)
 
+    def test_combine_fields_bonus(self) -> None:
+        from src.transform import parse_combine_specs, apply_combine_specs
+
+        row = {"price_buy_net": "58.5", "currency": "EUR"}
+        variation = {"price_buy_net": 58.5, "currency": "EUR"}  # simulate post-conversion
+
+        specs = parse_combine_specs(["price_buy_net,currency:price_buy_net_currency: "])
+        apply_combine_specs(variation, row, specs)
+
+        self.assertEqual(variation["price_buy_net_currency"], "58.5 EUR")
 
 if __name__ == "__main__":
     unittest.main()

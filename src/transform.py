@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 FieldsTuple = Tuple[str, ...]
 MappingIndex = Dict[FieldsTuple, Dict[str, Tuple[str, str]]]
+CombineSpec = Tuple[Tuple[str, ...], str, str]
 NUMERIC_FIELDS = {"price_buy_net", "price_buy_gross", "price_sell", "discount_rate"}
 
 
@@ -19,6 +20,69 @@ class CliArgs:
     pricat: str
     mappings: str
     output: str
+    combine: Optional[List[str]] = None
+
+# BONUS - Combine fields.
+def parse_combine_specs(raw_specs: Optional[List[str]]) -> List[CombineSpec]:
+    """
+    Parse --combine specs into a structured list.
+
+    Expected format per spec:
+      field1,field2:new_field:separator
+    """
+    if not raw_specs:
+        return []
+
+    specs: List[CombineSpec] = []
+    for raw in raw_specs:
+        parts = raw.split(":", 2)
+        if len(parts) != 3:
+            raise ValueError(
+                "Invalid --combine spec. Expected: field1,field2:new_field:separator "
+                f"(got: {raw!r})"
+            )
+
+        fields_raw, new_field, sep = parts
+        fields = tuple(f.strip() for f in fields_raw.split(",") if f.strip())
+        if not fields:
+            raise ValueError(f"Invalid --combine spec (empty fields): {raw!r}")
+        if not new_field.strip():
+            raise ValueError(f"Invalid --combine spec (empty new_field): {raw!r}")
+
+        # Decode common escapes
+        sep = sep.replace("\\t", "\t").replace("\\n", "\n")
+
+        specs.append((fields, new_field.strip(), sep))
+
+    return specs
+
+def apply_combine_specs(variation: Dict[str, object], row: Dict[str, str], specs: List[CombineSpec]) -> None:
+    """
+    Mutates 'variation' by adding new combined fields based on specs.
+    Uses values from variation first (mapped/converted), and falls back to row values.
+    Skips if any required field is missing/empty.
+    """
+    if not specs:
+        return
+
+    for fields, new_field, sep in specs:
+        values: List[str] = []
+        ok = True
+
+        for f in fields:
+            if f in variation:
+                val = variation.get(f)
+            else:
+                val = row.get(f, "")
+
+            if val is None or val == "":
+                ok = False
+                break
+
+            values.append(str(val))
+
+        if ok:
+            variation[new_field] = sep.join(values)
 
 
 # Read CSV.
@@ -115,7 +179,8 @@ def row_to_variation(row: Dict[str, str], mappings_idx: MappingIndex) -> Dict[st
 
 
 # Generate catalog by articles.
-def build_catalog_from_pricat(pricat_csv_path: str, mappings_idx: MappingIndex) -> Tuple[Dict, int]:
+def build_catalog_from_pricat(pricat_csv_path: str, mappings_idx: MappingIndex,
+                              combine_specs: Optional[List[CombineSpec]] = None,) -> Tuple[Dict, int]:
     """
     Generate final JSON + return total of processed rows.
     """
@@ -143,6 +208,8 @@ def build_catalog_from_pricat(pricat_csv_path: str, mappings_idx: MappingIndex) 
 
         # Row -> variation.
         variation = row_to_variation(row, mappings_idx)
+
+        apply_combine_specs(variation, row, combine_specs or [])  # Apply combination of fields.
 
         # Create article if it doesn't exist.
         if article_number not in articles_by_number:
@@ -203,18 +270,33 @@ def basic_validations(result: Dict, rows_processed: int) -> None:
 # CLI.
 def parse_args(argv: Optional[List[str]] = None) -> CliArgs:
     """
-    Parser.
+    Argument parser for the CLI.
     """
     parser = argparse.ArgumentParser(
         prog="python -m src.transform",
-        description="Transform pricat.csv + mappings.csv in a JSON grouped by article..",
+        description="Transform pricat.csv + mappings.csv into a JSON grouped by article.",
     )
     parser.add_argument("--pricat", required=True, help="pricat.csv path (delimiter ';')")
     parser.add_argument("--mappings", required=True, help="mappings.csv path (delimiter ';')")
     parser.add_argument("--output", required=True, help="JSON output path.")
+    parser.add_argument(
+        "--combine",
+        action="append",
+        default=None,
+        help=(
+            "Combine multiple fields into a new field. "
+            "Format: field1,field2:new_field:separator. "
+            "Example: --combine price_buy_net,currency:price_buy_net_currency:' '"
+        ),
+    )
 
     ns = parser.parse_args(argv)
-    return CliArgs(pricat=ns.pricat, mappings=ns.mappings, output=ns.output)
+    return CliArgs(
+        pricat=ns.pricat,
+        mappings=ns.mappings,
+        output=ns.output,
+        combine=ns.combine,
+    )
 
 
 # Main.
@@ -229,11 +311,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"ERROR: It doesn't exist, --mappings: {args.mappings}", file=sys.stderr)
         return 2
 
+    combine_specs = parse_combine_specs(args.combine)
+
     # 1) Load mappings.
     mappings_idx = load_mappings_index(args.mappings)
 
     # 2) Build catalog.
-    result, rows_processed = build_catalog_from_pricat(args.pricat, mappings_idx)
+    result, rows_processed = build_catalog_from_pricat(args.pricat, mappings_idx, combine_specs=combine_specs)
 
     # 3) Basic validations.
     basic_validations(result, rows_processed)
