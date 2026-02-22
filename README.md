@@ -79,6 +79,12 @@ Run all tests:
 python -m unittest -v
 ```
 
+## Help
+
+```bash
+python -m src.transform --help
+```
+
 ## Implementation notes
 
 - `brand` is stored at catalog level and excluded from each variation.
